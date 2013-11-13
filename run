@@ -58,11 +58,16 @@ if [ -e "$FWDIR/lib" ]; then
   done
 fi
 
+# add Hadoop conf dir
+if [ "$HADOOP_CONF_DIR" != "" ]; then
+  CLASSPATH+=":$HADOOP_CONF_DIR"
+fi
+
 SPARK_CLASSPATH=$CLASSPATH
 
 export SPARK_CLASSPATH
 
-JAVA_OPTS="-server -XX:PermSize=64M -XX:MaxPermSize=128m -Xss10m -Xmx1g "
+JAVA_OPTS="-server -XX:PermSize=64M -XX:MaxPermSize=128m -Xss10m -Xmx15g "
 JAVA_OPTS+="$SPARK_JAVA_OPTS"
 
 # Figure out whether to run our class with java or with the scala launcher.

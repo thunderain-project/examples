@@ -33,7 +33,14 @@ object SimRankImpl {
       val typ = SimRankImplType.withName(r)
       val simrankImpl = typ match {
         case SimRankImplType.mapreduce =>
-          new SimRankMapReduceImpl(sc)
+          new NaiveMapReduceImpl(sc)
+        case SimRankImplType.delta =>
+          new NaiveDeltaImpl(sc)
+        case SimRankImplType.dfs =>
+          new DFSSimRankImpl(sc)
+        case SimRankImplType.matrix =>
+          new MatrixImpl(sc)
+
         case _ => throw new IOException("unknown simrank impl type " + typ)
       }
 
@@ -43,5 +50,5 @@ object SimRankImpl {
 }
 
 object SimRankImplType extends Enumeration {
-  val mapreduce, matrix = Value
+  val mapreduce, delta, dfs, matrix = Value
 }
