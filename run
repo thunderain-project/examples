@@ -42,21 +42,7 @@ fi
 
 # Build up classpath
 CLASSPATH+=":$FWDIR/config"
-CLASSPATH+=":$FWDIR/target/scala-$SCALA_VERSION/simrank_$SCALA_VERSION-$PROJECT_VERSION.jar"
-
-if [ -e "$FWDIR/lib_managed" ]; then
-  for jar in `find $FWDIR/lib_managed -name "*.jar"`
-  do
-    CLASSPATH+=":$jar"
-  done
-fi
-
-if [ -e "$FWDIR/lib" ]; then
-  for jar in `find $FWDIR/lib -name "*.jar"`
-  do
-    CLASSPATH+=":$jar"
-  done
-fi
+CLASSPATH+=":$FWDIR/target/scala-$SCALA_VERSION/simrank-assembly-$PROJECT_VERSION.jar"
 
 # add Hadoop conf dir
 if [ "$HADOOP_CONF_DIR" != "" ]; then

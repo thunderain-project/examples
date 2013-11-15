@@ -33,14 +33,10 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
   }
 
   override def executeSimRank() {
-    // normalized adjacency matrix
-    val normAdjMatrix = adjacencyMatrix().partitionBy(new ColumnPartitioner(graphPartitions))
-    normAdjMatrix.persist(StorageLevel.MEMORY_AND_DISK)
-    normAdjMatrix.foreach(_ => Unit)
-
-    // tranpose of normalized adjacency matrix
+    // tranpose of normalized adjacency matrix, CRS sparse matrix
     val transNormAdjMatrix = transpose(adjacencyMatrix())
-      .partitionBy(new RowPartitioner(graphPartitions))
+      .map(e => (e._1._1, (e._1._2, e._2)))
+      .groupByKey(new ModPartitioner(graphPartitions))
     transNormAdjMatrix.persist(StorageLevel.MEMORY_AND_DISK)
     transNormAdjMatrix.foreach(_ => Unit)
 
@@ -48,7 +44,7 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
     var simMatrix = initSimrankMatrix(new ColumnPartitioner(partitions))
 
     (1 to iterations).foreach { i =>
-      simMatrix = matrixSimrankCalculate(normAdjMatrix, transNormAdjMatrix, simMatrix, i)
+      simMatrix = matrixSimrankCalculate(transNormAdjMatrix, simMatrix)
       //simMatrix.foreach(println)
     }
 
@@ -56,116 +52,50 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
   }
 
   def matrixSimrankCalculate(
-    adjMatrix: RDD[((Int, Int), Double)],
-    transAdjMatrix: RDD[((Int, Int), Double)],
-    simMatrix: RDD[((Int, Int), Double)],
-    iteration: Int): RDD[((Int, Int), Double)] = {
+    transAdjMatrix: RDD[(Int, Seq[(Int, Double)])],
+    simMatrix: RDD[((Int, Int), Double)]): RDD[((Int, Int), Double)] = {
 
-    //left two matrices multiplication
-    val leftMatrix = CartesianPartitionsRDD.cartesianPartitions(simMatrix, transAdjMatrix, sc) {
-      (iter1: Iterator[((Int, Int), Double)],
-       iter2: Iterator[((Int, Int), Double)],
-       part1: Int,
-       part2: Int) =>
+    def matMult(
+      iter1: Iterator[((Int, Int), Double)],
+      iter2: Iterator[(Int, Seq[(Int, Double)])],
+      part1: Int,
+      part2: Int): Iterator[((Int, Int), Double)] = {
+
         val cols = (graphSize - 1 - part1) / partitions + 1
-        val mat2 = if (iteration == 1) {
-          //new SparseMatrix(graphSize, cols)
-          DoubleMatrix.zeros(graphSize, cols)
-        } else {
-          //new DenseMatrix(graphSize, cols)
-          DoubleMatrix.zeros(graphSize, cols)
-        }
+        val mat2 = DoubleMatrix.zeros(graphSize, cols)
 
-        MatrixImpl.timeProfile(" left matrix Simrank matrix fill") {
-          //iter1.foreach(e => mat2.setQuick(e._1._1, (e._1._2 - part1) / partitions, e._2))
+        MatrixImpl.timeProfile("matrix Simrank matrix fill") {
+          // it would be better to store in column oriented, for cache hit
           iter1.foreach(e => mat2.put(e._1._1, (e._1._2 - part1) / partitions, e._2))
         }
 
-        val rows = (graphSize - 1 - part2) / graphPartitions + 1
-        //val mat1 = new SparseMatrix(rows, graphSize)
-        val mat1 = DoubleMatrix.zeros(rows, graphSize)
+        MatrixImpl.timeProfile("matrix multiplication") {
+          iter2.flatMap { row =>
+            val rIdx = row._1
+            for (i <- 0 until mat2.columns) yield {
+              var sum: Double = 0.0
+              row._2.foreach(e => sum += e._2 * mat2.get(e._1, i))
 
-        MatrixImpl.timeProfile("left matrix graph matrix fill") {
-          //iter2.foreach( e => mat1.setQuick((e._1._1 - part2) / graphPartitions, e._1._2, e._2))
-          iter2.foreach( e => mat1.put((e._1._1 - part2) / graphPartitions, e._1._2, e._2))
-        }
-
-        val multMat = MatrixImpl.timeProfile("left matrix multiplication") {
-          //mat1.times(mat2)
-          mat1.mmul(mat2)
-        }
-
-        //import scala.collection.JavaConversions._
-        //multMat.iterator().flatMap { matSlice =>
-        //  val idx = matSlice.index()
-        //  val vecIter = matSlice.vector().nonZeroes().iterator()
-        //  vecIter.map(e => ((idx * graphPartitions + part2, e.index * partitions + part1), e.get))
-        //}
-        {
-          for (i <- 0 until multMat.rows; j <- 0 until multMat.columns if multMat.get(i, j) != 0.0)
-            yield {
-            ((i * graphPartitions + part2, j * partitions + part1), multMat.get(i, j))
+              // need to transpose
+              ((i * partitions + part1, rIdx), sum)
+            }
           }
-        }.toIterator
-    }.partitionBy(new RowPartitioner(partitions))
+        }
+    }
+
+    //left two matrices multiplication
+    val leftMatrix =
+      CartesianPartitionsRDD.cartesianPartitions(simMatrix, transAdjMatrix, sc)(matMult)
+        .partitionBy(new ColumnPartitioner(partitions))
 
     //right two matrices multiplication
-    CartesianPartitionsRDD.cartesianPartitions(leftMatrix, adjMatrix, sc) {
-      (iter1: Iterator[((Int, Int), Double)],
-       iter2: Iterator[((Int, Int), Double)],
-       part1: Int,
-       part2: Int) =>
-        val rows = (graphSize - 1 - part1) / partitions + 1
-        val mat1 = if (iteration == 1) {
-          //new SparseMatrix(rows, graphSize)
-          DoubleMatrix.zeros(rows, graphSize)
-        } else {
-          //new DenseMatrix(rows, graphSize)
-          DoubleMatrix.zeros(rows, graphSize)
-        }
+    val rightMatrix =
+      CartesianPartitionsRDD.cartesianPartitions(leftMatrix, transAdjMatrix, sc)(matMult)
+      .map (e => if (e._1._1 == e._1._2) (e._1, 1.0) else (e._1, e._2 * 0.8))
+      .partitionBy(new ColumnPartitioner(partitions))
 
-        MatrixImpl.timeProfile("right matrix simrank matrix fill") {
-          //iter1.foreach(e => mat1.setQuick((e._1._1 - part1) / partitions, e._1._2, e._2))
-          iter1.foreach(e => mat1.put((e._1._1 - part1) / partitions, e._1._2, e._2))
-        }
-
-        val cols = (graphSize - 1 - part2) / graphPartitions + 1
-        //val mat2 = new SparseMatrix(graphSize, cols)
-        val mat2 = DoubleMatrix.zeros(graphSize, cols)
-        MatrixImpl.timeProfile("right matrix graph matrix fill") {
-          //iter2.foreach(e => mat2.setQuick(e._1._1, (e._1._2 - part2) / graphPartitions, e._2))
-          iter2.foreach(e => mat2.put(e._1._1, (e._1._2 - part2) / graphPartitions, e._2))
-        }
-
-        val multMat = MatrixImpl.timeProfile("right matrix multiplication") {
-          //mat1.times(mat2)
-          mat1.mmul(mat2)
-        }
-
-        //import scala.collection.JavaConversions._
-        //multMat.iterator().flatMap { matSlice =>
-        //  val idx = matSlice.index()
-        //  val vecIter = matSlice.vector().nonZeroes().iterator()
-        //vecIter.map { e =>
-        //  val i = idx * partitions + part1
-        //  val j = e.index * graphPartitions + part2
-        //  if (i == j)
-        //    ((i, j), 1.0)
-        //  else
-        //    ((i, j), e.get * 0.8)
-        //}
-
-        {
-          for (i <- 0 until multMat.rows; j <- 0 until multMat.columns if multMat.get(i, j) != 0.0)
-            yield {
-            val u = i * partitions + part1
-            val v = j * graphPartitions + part2
-            if (u == v) ((u, v), 1.0)
-            else ((u, v), 0.8 * multMat.get(i, j))
-          }
-        }.toIterator
-      }.partitionBy(new ColumnPartitioner(partitions))
-    }
+    rightMatrix
+  }
 }
 
 object MatrixImpl {
@@ -178,15 +108,12 @@ object MatrixImpl {
   }
 }
 
-class RowPartitioner(val partitions: Int) extends Partitioner {
+class ModPartitioner(val partitions: Int) extends Partitioner {
   def numPartitions = partitions
-  def getPartition(key: Any) = key.asInstanceOf[(Int, Int)] match {
-    case null => 0
-    case (i, j) => i % partitions
-  }
+  def getPartition(key: Any) = key.asInstanceOf[Int] % partitions
 
   override def equals(other: Any): Boolean = other match {
-    case h: RowPartitioner =>
+    case h: ModPartitioner =>
       h.numPartitions == numPartitions
     case _ => false
   }
