@@ -27,7 +27,7 @@ class CartesianPartitionsPartition(
 
 class CartesianPartitionsRDD[T: ClassManifest, U: ClassManifest, V: ClassManifest](
   sc: SparkContext,
-  f: (Iterator[T], Iterator[U], Int, Int) => Iterator[V],
+  f: (=> Iterator[T], => Iterator[U], Int, Int) => Iterator[V],
   var rdd1: RDD[T],
   var rdd2: RDD[U]) extends RDD[V](sc, Nil) {
 
@@ -44,23 +44,32 @@ class CartesianPartitionsRDD[T: ClassManifest, U: ClassManifest, V: ClassManifes
 
   override def getPreferredLocations(split: Partition): Seq[String] = {
     val currSplit = split.asInstanceOf[CartesianPartitionsPartition]
-    rdd1.preferredLocations(currSplit.s1) ++ rdd2.preferredLocations(currSplit.s2)
+    (rdd1.preferredLocations(currSplit.s1) ++ rdd2.preferredLocations(currSplit.s2)).distinct
   }
 
   override def compute(s: Partition, context: TaskContext): Iterator[V] = {
     val partition = s.asInstanceOf[CartesianPartitionsPartition]
 
-    val env = SparkEnv.get
-    val blockManager = env.blockManager
-    val key = RDDBlockId(rdd2.id, partition.s2.index)
-    blockManager.getLocal(key) match {
-      case None =>
-        blockManager.getRemote(key).foreach { iter =>
-          blockManager.put(key, iter, StorageLevel.MEMORY_AND_DISK_SER, true)
+    CartesianPartitionsRDD.synchronized {
+      val env = SparkEnv.get
+      val blockManager = env.blockManager
+
+      val executorId = try {
+        blockManager.blockManagerId.executorId.toInt
+      } catch {
+        case e: Exception => 0
+      }
+
+        val key = RDDBlockId(rdd2.id, partition.s2.index)
+        blockManager.getLocal(key) match {
+          case None =>
+            blockManager.getRemote(key).foreach { iter =>
+              blockManager.put(key, iter, StorageLevel.MEMORY_AND_DISK, true)
+            }
+          case Some(iter) =>
+            println(">>>>>get local key:" + key.name)
+            Unit
         }
-      case Some(iter) =>
-        println(">>>>>get local key:" + key.name)
-        Unit
     }
 
     println(">>>>>compute part1: " + partition.s1.index + ", part2: " + partition.s2.index)
@@ -89,7 +98,7 @@ class CartesianPartitionsRDD[T: ClassManifest, U: ClassManifest, V: ClassManifes
 object CartesianPartitionsRDD {
   def cartesianPartitions[T: ClassManifest, U: ClassManifest, V: ClassManifest]
     (rdd1: RDD[T], rdd2: RDD[U], sc: SparkContext)
-    (f: (Iterator[T], Iterator[U], Int, Int) => Iterator[V]): RDD[V] = {
+    (f: (=> Iterator[T], => Iterator[U], Int, Int) => Iterator[V]): RDD[V] = {
     new CartesianPartitionsRDD(sc, sc.clean(f), rdd1, rdd2)
   }
 }

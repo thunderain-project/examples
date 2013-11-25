@@ -1,8 +1,5 @@
 package simrank
 
-/* test with Jblas and mahout math library*/
-//import org.apache.mahout.math.{DenseMatrix, Matrix, SparseMatrix}
-
 import com.esotericsoftware.kryo.Kryo
 
 import org.apache.spark.{Partitioner, SparkContext}
@@ -31,8 +28,8 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
     matrix.map(e => ((e._1._2, e._1._1), e._2))
   }
 
-  def initSimrankMatrix(partitioner: Partitioner): RDD[((Int, Int), Double)] = {
-    initializeData(getVerifiedProperty("simrank.initSimMatPath"), sc).partitionBy(partitioner)
+  def initSimrankMatrix(): RDD[((Int, Int), Double)] = {
+    initializeData(getVerifiedProperty("simrank.initSimMatPath"), sc)
   }
 
   override def executeSimRank() {
@@ -40,103 +37,118 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
     val transNormAdjMatrix = transpose(adjacencyMatrix())
       .map(e => (e._1._1, (e._1._2, e._2)))
       .groupByKey(new ModPartitioner(graphPartitions))
-    transNormAdjMatrix.persist(StorageLevel.MEMORY_AND_DISK_SER_2)
+    transNormAdjMatrix.persist(StorageLevel.MEMORY_AND_DISK_2)
     transNormAdjMatrix.foreach(_ => Unit)
 
     // initial simrank matrix
-    var simMatrix = initSimrankMatrix(new ColumnPartitioner(partitions))
+    var simMatrix = initSimrankMatrix()
+      .map(e => (e._1._2, (e._1._1, e._2)))
+      .groupByKey(new ModPartitioner(partitions))
 
     (1 to iterations).foreach { i =>
       simMatrix = matrixSimrankCalculate(transNormAdjMatrix, simMatrix)
-      //simMatrix.foreach(println)
+      //simMatrix.foreach(e => println(e._1 + ":" + e._2.mkString(" ")))
     }
 
-    simMatrix.saveAsTextFile("result")
+    simMatrix.foreach(_ => Unit)
+    //simMatrix.saveAsTextFile("result")
   }
 
   def matrixSimrankCalculate(
     transAdjMatrix: RDD[(Int, Seq[(Int, Double)])],
-    simMatrix: RDD[((Int, Int), Double)]): RDD[((Int, Int), Double)] = {
+    simMatrix: RDD[(Int, Seq[(Int, Double)])]): RDD[(Int, Seq[(Int, Double)])] = {
 
     def leftMatMult(
-      iter1: Iterator[((Int, Int), Double)],
-      iter2: Iterator[(Int, Seq[(Int, Double)])],
+      iter1: => Iterator[(Int, Seq[(Int, Double)])],
+      iter2: => Iterator[(Int, Seq[(Int, Double)])],
       part1: Int,
-      part2: Int): Iterator[((Int, Int), Double)] = {
-        val cols = (graphSize - 1 - part1) / partitions + 1
-        val mat2 = DoubleMatrix.zeros(graphSize, cols)
-
-        MatrixImpl.timeProfile("matrix Simrank matrix fill") {
-          // it would be better to store in column oriented, for cache hit
-          iter1.foreach(e => mat2.put(e._1._1, (e._1._2 - part1) / partitions, e._2))
-        }
-
-        iter2.flatMap { row =>
-          val rIdx = row._1
-          for (i <- 0 until mat2.columns) yield {
-            val u = rIdx
-            val v = i * partitions + part1
-            if ((u < graphASize && v < graphASize) ||
-              (u >= graphASize && v >= graphASize)) {
-              ((v, u), 0.0)
+      part2: Int): Iterator[(Int, (Int, Double))] = {
+        iter1.flatMap { col =>
+          val cIdx = col._1
+          val column = new Array[Double](graphSize)
+          col._2.foreach(e => column(e._1) = e._2)
+          iter2.map { row =>
+            val rIdx = row._1
+            if ((rIdx < graphASize && cIdx < graphASize) ||
+              (rIdx >= graphASize && cIdx >= graphASize)) {
+              (rIdx, (cIdx, 0.0))
             } else {
               var sum: Double = 0.0
-              row._2.foreach(e => sum += e._2 * mat2.get(e._1, i))
-              ((v, u), sum)
+              row._2.foreach(e => sum += e._2 * column(e._1))
+              (rIdx, (cIdx, sum))
             }
-          }
-        }.filterNot(_._2 == 0.0)
-    }
-
-    def rightMatMult(
-      iter1: Iterator[((Int, Int), Double)],
-      iter2: Iterator[(Int, Seq[(Int, Double)])],
-      part1: Int,
-      part2: Int): Iterator[((Int, Int), Double)] = {
-        val cols = (graphSize - 1 - part1) / partitions + 1
-        val mat2 = DoubleMatrix.zeros(graphSize, cols)
-
-        MatrixImpl.timeProfile("matrix Simrank matrix fill") {
-          // it would be better to store in column oriented, for cache hit
-          iter1.foreach(e => mat2.put(e._1._1, (e._1._2 - part1) / partitions, e._2))
+          }.filterNot(_._2._2 == 0.0)
         }
-
-        iter2.flatMap { row =>
-          val rIdx = row._1
-          for (i <- 0 until mat2.columns) yield {
-            val u = rIdx
-            val v = i * partitions + part1
-            if ((u < graphASize && v >= graphASize) ||
-              (u >= graphASize && v < graphASize)) {
-              ((v, u), 0.0)
-            } else {
-              var sum: Double = 0.0
-              row._2.foreach(e => sum += e._2 * mat2.get(e._1, i))
-              ((v, u), sum)
-            }
-          }
-        }.filterNot(_._2 == 0.0)
     }
+
     //left two matrices multiplication
     val leftMatrix =
       CartesianPartitionsRDD.cartesianPartitions(simMatrix, transAdjMatrix, sc)(leftMatMult)
-        .partitionBy(new ColumnPartitioner(partitions))
+      .groupByKey(new ModPartitioner(partitions))
 
-    //right two matrices multiplication
-    val rightMatrix =
-      CartesianPartitionsRDD.cartesianPartitions(leftMatrix, transAdjMatrix, sc)(rightMatMult)
-
-    val resultMatrix = if (graphPartitions > 1) {
-      rightMatrix.map(e => if (e._1._1 == e._1._2) (e._1, 1.0) else (e._1, e._2 * 0.8))
-        .partitionBy(new ColumnPartitioner(partitions))
-    } else {
-      rightMatrix.map { e =>
-        if (e._1._1 == e._1._2) ((e._1._2, e._1._1), 1.0)
-        else ((e._1._2, e._1._1), e._2 * 0.8)
+    val rightMatrix = if (graphPartitions == 1) {
+      def rightMatMult(
+        iter1: => Iterator[(Int, Seq[(Int, Double)])],
+        iter2: => Iterator[(Int, Seq[(Int, Double)])],
+        part1: Int,
+        part2: Int): Iterator[(Int, Seq[(Int, Double)])] = {
+          iter1.map { col =>
+            val cIdx = col._1
+            val column = new Array[Double](graphSize)
+            col._2.foreach(e => column(e._1) = e._2)
+            val tmp = iter2.map { row =>
+              val rIdx = row._1
+              if ((rIdx < graphASize && cIdx >= graphASize) ||
+                (rIdx >= graphASize && cIdx < graphASize)) {
+                (rIdx, 0.0)
+              } else {
+                if (rIdx == cIdx) {
+                  (rIdx, 1.0)
+                } else {
+                  var sum: Double = 0.0
+                  row._2.foreach(e => sum += e._2 * column(e._1))
+                  (rIdx, sum * 0.8)
+                }
+              }
+            }.filterNot(_._2 == 0.0).toSeq
+            (cIdx, tmp)
+          }
       }
+
+      CartesianPartitionsRDD.cartesianPartitions(leftMatrix, transAdjMatrix, sc)(rightMatMult)
+   } else {
+      def genericRightMatMult(
+        iter1: => Iterator[(Int, Seq[(Int, Double)])],
+        iter2: => Iterator[(Int, Seq[(Int, Double)])],
+        part1: Int,
+        part2: Int): Iterator[(Int, (Int, Double))] = {
+          iter1.flatMap { col =>
+            val cIdx = col._1
+            val column = new Array[Double](graphSize)
+            col._2.foreach(e => column(e._1) = e._2)
+            iter2.map { row =>
+              val rIdx = row._1
+              if ((rIdx < graphASize && cIdx >= graphASize) ||
+                (rIdx >= graphASize && cIdx < graphASize)) {
+                (cIdx, (rIdx, 0.0))
+              } else {
+                if (rIdx == cIdx) {
+                  (cIdx, (rIdx, 1.0))
+                } else {
+                  var sum: Double = 0.0
+                  row._2.foreach(e => sum += e._2 * column(e._1))
+                  (cIdx, (rIdx, sum * 0.8))
+                }
+              }
+            }.filterNot(_._2._2 == 0.0)
+          }
+      }
+
+      CartesianPartitionsRDD.cartesianPartitions(leftMatrix, transAdjMatrix, sc)(genericRightMatMult)
+        .groupByKey(new ModPartitioner(partitions))
     }
 
-    resultMatrix
+    rightMatrix
   }
 }
 
@@ -163,20 +175,6 @@ class ModPartitioner(val partitions: Int) extends Partitioner {
 
   override def equals(other: Any): Boolean = other match {
     case h: ModPartitioner =>
-      h.numPartitions == numPartitions
-    case _ => false
-  }
-}
-
-class ColumnPartitioner(val partitions: Int) extends Partitioner {
-  def numPartitions = partitions
-  def getPartition(key: Any) = key.asInstanceOf[(Int, Int)] match {
-    case null => 0
-    case (i, j) => j % partitions
-  }
-
-  override def equals(other: Any): Boolean = other match {
-    case h: ColumnPartitioner =>
       h.numPartitions == numPartitions
     case _ => false
   }
