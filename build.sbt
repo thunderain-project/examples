@@ -20,12 +20,6 @@ libraryDependencies += "org.apache.spark" %% "spark-core" % "0.9.0-incubating-SN
 
 libraryDependencies += "org.apache.hadoop" % "hadoop-client" % "2.0.0-cdh4.1.2"
 
-libraryDependencies += "org.apache.hadoop" % "hadoop-client" % "2.0.0-cdh4.1.2"
-
-//libraryDependencies += "org.apache.mahout" % "mahout-math" % "0.8"
-
-libraryDependencies += "org.jblas" % "jblas" % "1.2.3"
-
 resolvers ++= Seq(
    "Cloudera Repository" at "https://repository.cloudera.com/artifactory/cloudera-repos/",
    "Maven Repository" at "http://repo1.maven.org/maven2",

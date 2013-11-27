@@ -55,7 +55,6 @@ class DFSSimRankImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
     val outV1Len = outV1.length
     val outV2Len = outV2.length
     for (u <- outV1; v <- outV2) yield {
-      //println(">>>>iter:" + iter + ": " + u + " " + v + " " + value.value)
       if (u != v && iter != 0) {
         dfsSimRankCalculate((u, v), value, iter - 1, graph)
       } else if (u == v) {

@@ -18,13 +18,12 @@ class NaiveDeltaImpl(@transient sc: SparkContext) extends NaiveMapReduceImpl(sc)
 
     val initSimMatRDD = initializeData(getVerifiedProperty("simrank.initSimMatPath"), sc)
     var deltaSimMatRDD = simrankCalculate(bdGraph, initSimMatRDD)
-    deltaSimMatRDD.persist(StorageLevel.DISK_ONLY)
+    deltaSimMatRDD.persist(StorageLevel.DISK_ONLY).foreach(_ => Unit)
 
     var simMatRDD = initSimMatRDD.leftOuterJoin(deltaSimMatRDD).map { e =>
       (e._1, e._2._2.getOrElse(0.0) + e._2._1)
     }
-    simMatRDD.persist(StorageLevel.DISK_ONLY)
-    simMatRDD.foreach(_ => Unit)
+    simMatRDD.persist(StorageLevel.DISK_ONLY).foreach(_ => Unit)
 
     // iterate to calculate the similarity matrix
     (0 until (iterations - 1)).foreach { i =>

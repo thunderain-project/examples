@@ -4,15 +4,15 @@ import com.esotericsoftware.kryo.Kryo
 
 import org.apache.spark.{Partitioner, SparkContext}
 import org.apache.spark.SparkContext._
-import org.apache.spark.rdd.{RDD, CartesianPartitionsRDD}
+import org.apache.spark.rdd.{RDD, CartesianPartitionsRDD, PartitionsRDD}
 import org.apache.spark.storage.StorageLevel
 
-import org.jblas.DoubleMatrix
 import org.apache.spark.serializer.KryoRegistrator
 
 class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
 
   val graphPartitions = getVerifiedProperty("simrank.matrix.graphPartitions").toInt
+  val subPartitions = getVerifiedProperty("simrank.matrix.subPartitions").toInt
 
   def adjacencyMatrix(): RDD[((Int, Int), Double)] = {
     initializeData(graphPath, sc)
@@ -37,118 +37,106 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
     val transNormAdjMatrix = transpose(adjacencyMatrix())
       .map(e => (e._1._1, (e._1._2, e._2)))
       .groupByKey(new ModPartitioner(graphPartitions))
-    transNormAdjMatrix.persist(StorageLevel.MEMORY_AND_DISK_2)
-    transNormAdjMatrix.foreach(_ => Unit)
+    transNormAdjMatrix.persist(StorageLevel.MEMORY_AND_DISK_2).foreach(_ => Unit)
 
     // initial simrank matrix
-    var simMatrix = initSimrankMatrix()
+    val simMatrix = initSimrankMatrix()
       .map(e => (e._1._2, (e._1._1, e._2)))
-      .groupByKey(new ModPartitioner(partitions))
+      .partitionBy(new ModPartitioner(partitions))
+
+    var splitSimMatrices: Array[RDD[(Int, Seq[(Int, Double)])]] = {
+      for (i <- 0 until (partitions / subPartitions)) yield {
+        val parts = simMatrix.partitions.filter(_.index % (partitions / subPartitions) == i)
+        new PartitionsRDD(simMatrix, parts).groupByKey(new SubModPartitioner(subPartitions))
+      }
+    }.toArray
 
     (1 to iterations).foreach { i =>
-      simMatrix = matrixSimrankCalculate(transNormAdjMatrix, simMatrix)
-      //simMatrix.foreach(e => println(e._1 + ":" + e._2.mkString(" ")))
+      splitSimMatrices = matrixSimrankCalculate(transNormAdjMatrix, splitSimMatrices)
     }
 
-    simMatrix.foreach(_ => Unit)
-    //simMatrix.saveAsTextFile("result")
+    splitSimMatrices.foreach(_.foreach(println))
+  }
+
+  private def leftMatMult(
+    iter1: => Iterator[(Int, Seq[(Int, Double)])],
+    iter2: => Iterator[(Int, Seq[(Int, Double)])],
+    part1: Int,
+    part2: Int): Iterator[(Int, (Int, Double))] = {
+
+    iter1.flatMap { col =>
+      val cIdx = col._1
+      val column = new Array[Double](graphSize)
+      col._2.foreach(e => column(e._1) = e._2)
+      iter2.map { row =>
+        val rIdx = row._1
+        if ((rIdx < graphASize && cIdx < graphASize) ||
+          (rIdx >= graphASize && cIdx >= graphASize)) {
+          (rIdx, (cIdx, 0.0))
+        } else {
+          var sum: Double = 0.0
+          row._2.foreach(e => sum += e._2 * column(e._1))
+          (rIdx, (cIdx, sum))
+        }
+      }.filterNot(_._2._2 == 0.0)
+    }
+  }
+
+
+  def rightMatMult(
+    iter1: => Iterator[(Int, Seq[(Int, Double)])],
+    iter2: => Iterator[(Int, Seq[(Int, Double)])],
+    part1: Int,
+    part2: Int): Iterator[(Int, (Int, Double))] = {
+
+    iter1.flatMap { col =>
+      val cIdx = col._1
+      val column = new Array[Double](graphSize)
+      col._2.foreach(e => column(e._1) = e._2)
+      iter2.map { row =>
+        val rIdx = row._1
+        if ((rIdx < graphASize && cIdx >= graphASize) ||
+          (rIdx >= graphASize && cIdx < graphASize)) {
+          (cIdx, (rIdx, 0.0))
+        } else {
+          if (rIdx == cIdx) {
+            (cIdx, (rIdx, 1.0))
+          } else {
+            var sum: Double = 0.0
+            row._2.foreach(e => sum += e._2 * column(e._1))
+            (cIdx, (rIdx, sum * 0.8))
+          }
+        }
+      }.filterNot(_._2._2 == 0.0)
+    }
   }
 
   def matrixSimrankCalculate(
     transAdjMatrix: RDD[(Int, Seq[(Int, Double)])],
-    simMatrix: RDD[(Int, Seq[(Int, Double)])]): RDD[(Int, Seq[(Int, Double)])] = {
+    simMatrices: Array[_ <: RDD[(Int, Seq[(Int, Double)])]])
+  : Array[RDD[(Int, Seq[(Int, Double)])]] = {
 
-    def leftMatMult(
-      iter1: => Iterator[(Int, Seq[(Int, Double)])],
-      iter2: => Iterator[(Int, Seq[(Int, Double)])],
-      part1: Int,
-      part2: Int): Iterator[(Int, (Int, Double))] = {
-        iter1.flatMap { col =>
-          val cIdx = col._1
-          val column = new Array[Double](graphSize)
-          col._2.foreach(e => column(e._1) = e._2)
-          iter2.map { row =>
-            val rIdx = row._1
-            if ((rIdx < graphASize && cIdx < graphASize) ||
-              (rIdx >= graphASize && cIdx >= graphASize)) {
-              (rIdx, (cIdx, 0.0))
-            } else {
-              var sum: Double = 0.0
-              row._2.foreach(e => sum += e._2 * column(e._1))
-              (rIdx, (cIdx, sum))
-            }
-          }.filterNot(_._2._2 == 0.0)
-        }
+    val leftMatSlices = simMatrices.map { simMatSlice =>
+      CartesianPartitionsRDD.cartesianPartitions(simMatSlice, transAdjMatrix, sc) {
+        leftMatMult
+      }
     }
 
-    //left two matrices multiplication
-    val leftMatrix =
-      CartesianPartitionsRDD.cartesianPartitions(simMatrix, transAdjMatrix, sc)(leftMatMult)
-      .groupByKey(new ModPartitioner(partitions))
-
-    val rightMatrix = if (graphPartitions == 1) {
-      def rightMatMult(
-        iter1: => Iterator[(Int, Seq[(Int, Double)])],
-        iter2: => Iterator[(Int, Seq[(Int, Double)])],
-        part1: Int,
-        part2: Int): Iterator[(Int, Seq[(Int, Double)])] = {
-          iter1.map { col =>
-            val cIdx = col._1
-            val column = new Array[Double](graphSize)
-            col._2.foreach(e => column(e._1) = e._2)
-            val tmp = iter2.map { row =>
-              val rIdx = row._1
-              if ((rIdx < graphASize && cIdx >= graphASize) ||
-                (rIdx >= graphASize && cIdx < graphASize)) {
-                (rIdx, 0.0)
-              } else {
-                if (rIdx == cIdx) {
-                  (rIdx, 1.0)
-                } else {
-                  var sum: Double = 0.0
-                  row._2.foreach(e => sum += e._2 * column(e._1))
-                  (rIdx, sum * 0.8)
-                }
-              }
-            }.filterNot(_._2 == 0.0).toSeq
-            (cIdx, tmp)
-          }
+    val leftMatrix = sc.union(leftMatSlices).partitionBy(new ModPartitioner(partitions))
+    val leftMatColSlices = {
+      for (i <- 0 until (partitions / subPartitions)) yield {
+        val parts = leftMatrix.partitions.filter(_.index % (partitions / subPartitions) == i)
+        new PartitionsRDD(leftMatrix, parts).groupByKey(new SubModPartitioner(subPartitions))
       }
+    }.toArray
 
-      CartesianPartitionsRDD.cartesianPartitions(leftMatrix, transAdjMatrix, sc)(rightMatMult)
-   } else {
-      def genericRightMatMult(
-        iter1: => Iterator[(Int, Seq[(Int, Double)])],
-        iter2: => Iterator[(Int, Seq[(Int, Double)])],
-        part1: Int,
-        part2: Int): Iterator[(Int, (Int, Double))] = {
-          iter1.flatMap { col =>
-            val cIdx = col._1
-            val column = new Array[Double](graphSize)
-            col._2.foreach(e => column(e._1) = e._2)
-            iter2.map { row =>
-              val rIdx = row._1
-              if ((rIdx < graphASize && cIdx >= graphASize) ||
-                (rIdx >= graphASize && cIdx < graphASize)) {
-                (cIdx, (rIdx, 0.0))
-              } else {
-                if (rIdx == cIdx) {
-                  (cIdx, (rIdx, 1.0))
-                } else {
-                  var sum: Double = 0.0
-                  row._2.foreach(e => sum += e._2 * column(e._1))
-                  (cIdx, (rIdx, sum * 0.8))
-                }
-              }
-            }.filterNot(_._2._2 == 0.0)
-          }
-      }
-
-      CartesianPartitionsRDD.cartesianPartitions(leftMatrix, transAdjMatrix, sc)(genericRightMatMult)
-        .groupByKey(new ModPartitioner(partitions))
+    val rightMatColSlices = leftMatColSlices.map { leftMatColSlice =>
+      CartesianPartitionsRDD.cartesianPartitions(leftMatColSlice, transAdjMatrix, sc) {
+        rightMatMult
+      }.groupByKey(new SubModPartitioner(subPartitions))
     }
 
-    rightMatrix
+    rightMatColSlices
   }
 }
 
@@ -164,7 +152,7 @@ object MatrixImpl {
 
 class MatrixElementKryoSerializer extends KryoRegistrator {
   override def registerClasses(kryo: Kryo) {
-    kryo.register(classOf[((Int, Int), Double)])
+    kryo.register(classOf[(Int, (Int, Double))])
     kryo.register(classOf[(Int, Seq[(Int, Double)])])
   }
 }
@@ -181,6 +169,13 @@ class ModPartitioner(val partitions: Int) extends Partitioner {
 }
 
 
+class SubModPartitioner(val partitions: Int) extends Partitioner {
+  def numPartitions = partitions
+  def getPartition(key: Any) = key.asInstanceOf[Int] / partitions % partitions
 
-
-
+  override def equals(other: Any): Boolean = other match {
+    case h: ModPartitioner =>
+      h.numPartitions == numPartitions
+    case _ => false
+  }
+}

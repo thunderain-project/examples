@@ -9,25 +9,23 @@ import org.apache.spark.storage.StorageLevel
 class NaiveMapReduceImpl(@transient val sc: SparkContext)
   extends AbstractSimRankImpl {
 
- override def executeSimRank(): Unit = {
+  override def executeSimRank(): Unit = {
     val graphData = initializeGraphDataLocally(graphPath)
 
     // broadcast graph data to each executor.
     val bdGraph = sc.broadcast(graphData)
 
     val diagMatRDD = initializeData(getVerifiedProperty("simrank.diagSimMatPath"), sc)
-    diagMatRDD.persist(StorageLevel.DISK_ONLY)
+    diagMatRDD.persist(StorageLevel.DISK_ONLY).foreach(_ => Unit)
+
     var simMatRDD = initializeData(getVerifiedProperty("simrank.initSimMatPath"), sc)
 
     // iterate to calculate the similarity matrix
     (1 to iterations).foreach { i =>
       simMatRDD = simrankCalculate(bdGraph, simMatRDD).union(diagMatRDD)
-      simMatRDD.persist(StorageLevel.DISK_ONLY)
-      // trigger each step's action
-      simMatRDD.foreach(_ => Unit)
     }
 
-   simMatRDD.saveAsTextFile("result")
+    simMatRDD.saveAsTextFile("result")
   }
 
   def simrankCalculate(bdGraph: Broadcast[Array[((Int, Int), Double)]],

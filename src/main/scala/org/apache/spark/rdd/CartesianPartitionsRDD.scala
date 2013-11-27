@@ -60,19 +60,17 @@ class CartesianPartitionsRDD[T: ClassManifest, U: ClassManifest, V: ClassManifes
         case e: Exception => 0
       }
 
-        val key = RDDBlockId(rdd2.id, partition.s2.index)
-        blockManager.getLocal(key) match {
-          case None =>
-            blockManager.getRemote(key).foreach { iter =>
-              blockManager.put(key, iter, StorageLevel.MEMORY_AND_DISK, true)
-            }
-          case Some(iter) =>
-            println(">>>>>get local key:" + key.name)
-            Unit
-        }
+      val key = RDDBlockId(rdd2.id, partition.s2.index)
+      blockManager.getLocal(key) match {
+        case None =>
+          blockManager.getRemote(key).foreach { iter =>
+            blockManager.put(key, iter, StorageLevel.MEMORY_AND_DISK, true)
+          }
+        case Some(iter) =>
+          Unit
+      }
     }
 
-    println(">>>>>compute part1: " + partition.s1.index + ", part2: " + partition.s2.index)
     f(rdd1.iterator(partition.s1, context),
       rdd2.iterator(partition.s2, context),
       partition.s1.index,
