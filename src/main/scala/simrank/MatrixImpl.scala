@@ -2,12 +2,13 @@ package simrank
 
 import com.esotericsoftware.kryo.Kryo
 
-import org.apache.spark.{Partitioner, SparkContext}
+import org.apache.spark.{Aggregator, Partitioner, SparkContext}
 import org.apache.spark.SparkContext._
 import org.apache.spark.rdd.{RDD, CartesianPartitionsRDD, PartitionsRDD}
 import org.apache.spark.storage.StorageLevel
-
 import org.apache.spark.serializer.KryoRegistrator
+
+import scala.collection.mutable
 
 class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
 
@@ -42,12 +43,12 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
     // initial simrank matrix
     val simMatrix = initSimrankMatrix()
       .map(e => (e._1._2, (e._1._1, e._2)))
-      .partitionBy(new ModPartitioner(partitions))
+      .groupByKey(new ModPartitioner(partitions * subPartitions))
 
     var splitSimMatrices: Array[RDD[(Int, Seq[(Int, Double)])]] = {
-      for (i <- 0 until (partitions / subPartitions)) yield {
-        val parts = simMatrix.partitions.filter(_.index % (partitions / subPartitions) == i)
-        new PartitionsRDD(simMatrix, parts).groupByKey(new SubModPartitioner(subPartitions))
+      for (i <- 0 until subPartitions) yield {
+        val parts = simMatrix.partitions.filter(_.index % subPartitions == i)
+        new PartitionsRDD(simMatrix, parts)
       }
     }.toArray
 
@@ -56,6 +57,7 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
     }
 
     splitSimMatrices.foreach(_.foreach(println))
+    //splitSimMatrices.foreach(_.foreach(_ => Unit))
   }
 
   private def leftMatMult(
@@ -119,24 +121,37 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
     val leftMatSlices = simMatrices.map { simMatSlice =>
       CartesianPartitionsRDD.cartesianPartitions(simMatSlice, transAdjMatrix, sc) {
         leftMatMult
-      }
+      }.partitionBy(new ModPartitioner(partitions))
     }
 
-    val leftMatrix = sc.union(leftMatSlices).partitionBy(new ModPartitioner(partitions))
+    val leftMatrix = sc.union(leftMatSlices)
+
     val leftMatColSlices = {
-      for (i <- 0 until (partitions / subPartitions)) yield {
-        val parts = leftMatrix.partitions.filter(_.index % (partitions / subPartitions) == i)
-        new PartitionsRDD(leftMatrix, parts).groupByKey(new SubModPartitioner(subPartitions))
+      for (i <- 0 until subPartitions) yield {
+        val parts = leftMatrix.partitions.filter(_.index % subPartitions == i)
+        groupByKey(new PartitionsRDD(leftMatrix, parts))
       }
     }.toArray
 
     val rightMatColSlices = leftMatColSlices.map { leftMatColSlice =>
       CartesianPartitionsRDD.cartesianPartitions(leftMatColSlice, transAdjMatrix, sc) {
         rightMatMult
-      }.groupByKey(new SubModPartitioner(subPartitions))
+      }.groupByKey(new SubModPartitioner(partitions, subPartitions))
     }
 
     rightMatColSlices
+  }
+
+  private def groupByKey(rdd: RDD[(Int, (Int, Double))]): RDD[(Int, Seq[(Int, Double)])] = {
+    def createCombiner(v: (Int, Double)) = mutable.ArrayBuffer(v)
+    def mergeValue(buf: mutable.ArrayBuffer[(Int, Double)], v: (Int, Double)) = buf += v
+    val aggregator = new Aggregator[Int, (Int, Double), mutable.ArrayBuffer[(Int, Double)]](
+      createCombiner,
+      mergeValue,
+      null)
+
+    val bufs = rdd.mapPartitions(aggregator.combineValuesByKey, preservesPartitioning = true)
+    bufs.asInstanceOf[RDD[(Int, Seq[(Int, Double)])]]
   }
 }
 
@@ -169,9 +184,9 @@ class ModPartitioner(val partitions: Int) extends Partitioner {
 }
 
 
-class SubModPartitioner(val partitions: Int) extends Partitioner {
+class SubModPartitioner(val partitions: Int, val subPartitions: Int) extends Partitioner {
   def numPartitions = partitions
-  def getPartition(key: Any) = key.asInstanceOf[Int] / partitions % partitions
+  def getPartition(key: Any) = key.asInstanceOf[Int] / subPartitions % partitions
 
   override def equals(other: Any): Boolean = other match {
     case h: ModPartitioner =>
