@@ -50,7 +50,7 @@ class CartesianPartitionsRDD[T: ClassManifest, U: ClassManifest, V: ClassManifes
   override def compute(s: Partition, context: TaskContext): Iterator[V] = {
     val partition = s.asInstanceOf[CartesianPartitionsPartition]
 
-    CartesianPartitionsRDD.synchronized {
+    def iter = CartesianPartitionsRDD.synchronized {
       val env = SparkEnv.get
       val blockManager = env.blockManager
 
@@ -63,16 +63,20 @@ class CartesianPartitionsRDD[T: ClassManifest, U: ClassManifest, V: ClassManifes
       val key = RDDBlockId(rdd2.id, partition.s2.index)
       blockManager.getLocal(key) match {
         case None =>
-          blockManager.getRemote(key).foreach { iter =>
-            blockManager.put(key, iter, StorageLevel.MEMORY_AND_DISK, true)
+          val it = blockManager.getRemote(key).getOrElse {
+            throw new IOException("Failed to get remote partition " + key.name)
           }
-        case Some(iter) =>
-          Unit
+          println(">>>get remote iterator and add to local " + it)
+          blockManager.put(key, it, StorageLevel.MEMORY_AND_DISK, true)
+          it
+        case Some(it) =>
+          println(">>>get local iterator " + it)
+          it
       }
     }
 
     f(rdd1.iterator(partition.s1, context),
-      rdd2.iterator(partition.s2, context),
+      iter.asInstanceOf[Iterator[U]],
       partition.s1.index,
       partition.s2.index)
   }
