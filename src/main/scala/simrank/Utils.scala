@@ -10,7 +10,7 @@ object Utils extends Serializable {
     path: String,
     sc: SparkContext): Unit = {
 
-    sc.parallelize(0 until partitions).flatMap { i =>
+    sc.parallelize(0 until partitions, partitions).flatMap { i =>
       val graphSize = graphASize + graphBSize
       val lines = graphSize / partitions
 

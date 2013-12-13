@@ -2,9 +2,9 @@ package simrank
 
 import com.esotericsoftware.kryo.Kryo
 
-import org.apache.spark.{Partitioner, SparkContext}
+import org.apache.spark.{Aggregator, Partitioner, SparkContext}
 import org.apache.spark.SparkContext._
-import org.apache.spark.rdd.{RDD, PartitionsRDD}
+import org.apache.spark.rdd.{RDD, PartitionsRDD, SplitsRDD}
 import org.apache.spark.serializer.KryoRegistrator
 
 import scala.collection.mutable
@@ -17,8 +17,6 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
     throw new IllegalArgumentException("graph partitions: " + graphPartitions
       + " should be larger than 1")
   }
-
-  val subPartitions = getVerifiedProperty("simrank.matrix.subPartitions").toInt
 
   def adjacencyMatrix(): mutable.HashMap[(Int, Int), Double] = {
     val graphMap = new mutable.HashMap[Int, mutable.ArrayBuffer[(Int, Double)]]()
@@ -70,22 +68,23 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
     // initial simrank matrix
     val simMatrix = initSimrankMatrix()
       .map(e => (e._1._2, (e._1._1, e._2)))
-      .groupByKey(new ModPartitioner(partitions * subPartitions))
+      .groupByKey(new ModPartitioner(partitions * graphPartitions))
 
     var splitSimMatrices: Array[RDD[(Int, Seq[(Int, Double)])]] = {
-      for (i <- 0 until subPartitions) yield {
-        val parts = simMatrix.partitions.filter(_.index % subPartitions == i)
+      for (i <- 0 until graphPartitions) yield {
+        val parts = simMatrix.partitions.filter(_.index % graphPartitions == i)
         new PartitionsRDD(simMatrix, parts)
       }
     }.toArray
 
     (1 to iterations).foreach { i =>
-      splitSimMatrices = matrixSimrankCalculate(bdAdjMatArray, splitSimMatrices)
+      splitSimMatrices = matrixSimrankCalculate(bdAdjMatArray, splitSimMatrices, i)
       //splitSimMatrices.foreach( r => r.foreach(p => println(p._1 + ":" + p._2.mkString(" "))))
     }
 
-    //splitSimMatrices.foreach(_.foreach(println))
-    splitSimMatrices.foreach(r => r.saveAsTextFile("result-" + r.id))
+    splitSimMatrices.foreach(r => r.foreach(_ => Unit))
+    splitSimMatrices.foreach(r => r.foreach(_ => Unit))
+    //splitSimMatrices.foreach(r => r.saveAsTextFile("result-" + r.id))
   }
 
   private def leftMatMult(
@@ -109,7 +108,7 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
           row._2.foreach(e => sum += e._2 * column(e._1))
           (rIdx, (cIdx, sum))
         }
-      }.filterNot(_._2._2 == 0.0)
+      }.filter(_._2._2 != 0.0)
     }
   }
 
@@ -138,14 +137,15 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
             }
           }
         }
-      }.filterNot(_._2 == 0).toSeq
+      }.filter(_._2 != 0.0).toSeq
       (cIdx, iter)
     }
   }
 
   def matrixSimrankCalculate(
     transAdjMatSlices: Array[Broadcast[mutable.ArrayBuffer[(Int, mutable.ArrayBuffer[(Int, Double)])]]],
-    simMatrices: Array[_ <: RDD[(Int, Seq[(Int, Double)])]])
+    simMatrices: Array[_ <: RDD[(Int, Seq[(Int, Double)])]],
+    iteration: Int)
   : Array[RDD[(Int, Seq[(Int, Double)])]] = {
 
     for (slice <- transAdjMatSlices) yield {
@@ -155,8 +155,10 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
         }
       }
 
-      val leftMatColSlice = sc.union(leftMatSlices)
-        .groupByKey(new SubModPartitioner(partitions, subPartitions))
+      val leftMatrix = sc.union(leftMatSlices)
+        .partitionBy(new SubModPartitioner(
+          (partitions * scala.math.pow(2, iteration - 1)).toInt, graphPartitions))
+      val leftMatColSlice  = groupByKey(leftMatrix)
 
       val rightMatColSlice = leftMatColSlice.mapPartitions { iter =>
         rightMatMult(iter, transAdjMatSlices)
@@ -164,6 +166,18 @@ class MatrixImpl(@transient sc: SparkContext) extends AbstractSimRankImpl {
 
       rightMatColSlice
     }
+  }
+
+  private def groupByKey(rdd: RDD[(Int, (Int, Double))]): RDD[(Int, Seq[(Int, Double)])] = {
+    def createCombiner(v: (Int, Double)) = mutable.ArrayBuffer(v)
+    def mergeValue(buf: mutable.ArrayBuffer[(Int, Double)], v: (Int, Double)) = buf += v
+    val aggregator = new Aggregator[Int, (Int, Double), mutable.ArrayBuffer[(Int, Double)]](
+      createCombiner,
+      mergeValue,
+      null)
+
+    val bufs = rdd.mapPartitions(aggregator.combineValuesByKey, preservesPartitioning = true)
+    bufs.asInstanceOf[RDD[(Int, Seq[(Int, Double)])]]
   }
 }
 
@@ -181,6 +195,8 @@ class MatrixElementKryoSerializer extends KryoRegistrator {
   override def registerClasses(kryo: Kryo) {
     kryo.register(classOf[(Int, (Int, Double))])
     kryo.register(classOf[(Int, Seq[(Int, Double)])])
+    kryo.register(classOf[((Int, Int), Double)])
+    kryo.register(classOf[((Int, Int), (Double, Boolean))])
   }
 }
 
