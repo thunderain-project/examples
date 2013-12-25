@@ -40,6 +40,8 @@ object SimRankImpl {
           new DFSSimRankImpl(sc)
         case SimRankImplType.matrix =>
           new MatrixImpl(sc)
+        case SimRankImplType.pagerank =>
+          new PageRankLikeMatrixImpl(sc)
 
         case _ => throw new IOException("unknown simrank impl type " + typ)
       }
@@ -50,5 +52,5 @@ object SimRankImpl {
 }
 
 object SimRankImplType extends Enumeration {
-  val mapreduce, delta, dfs, matrix = Value
+  val mapreduce, delta, dfs, matrix, pagerank = Value
 }

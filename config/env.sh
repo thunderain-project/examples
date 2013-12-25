@@ -12,5 +12,6 @@
 #export MESOS_NATIVE_LIBRARY=/opt/mesos-0.12.0-dist/lib/libmesos.so
 
 SPARK_JAVA_OPTS="-verbose:gc -XX:-PrintGCDetails -XX:+PrintGCTimeStamps -Dspark.speculation=true "
+SPARK_JAVA_OPTS+="-Dcom.github.fommil.netlib.BLAS=com.github.fommil.netlib.NativeRefBLAS "
 
 export SPARK_JAVA_OPTS

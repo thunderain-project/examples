@@ -3,8 +3,8 @@
 import random
 import numpy
 
-GRAPHSET_SIZE = 50
-EDGE_SIZE = 700
+GRAPHSET_SIZE = 100
+EDGE_SIZE = 1400
 
 SET_A_SIZE = random.randint(1, GRAPHSET_SIZE)
 SET_B_SIZE = GRAPHSET_SIZE - SET_A_SIZE
