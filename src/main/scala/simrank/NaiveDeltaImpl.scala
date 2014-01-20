@@ -34,17 +34,16 @@ class NaiveDeltaImpl(@transient sc: SparkContext) extends NaiveMapReduceImpl(sc)
       .partitionBy(new HashPartitioner(graphPartitions))
 
     var deltaSimMatRDD = simrankCalculate(bdCRSGraph, bdCCSGraph,  initSimMatRDD)
-    deltaSimMatRDD.persist(StorageLevel.DISK_ONLY).foreach(_ => Unit)
+    deltaSimMatRDD.persist(StorageLevel.MEMORY_AND_DISK).foreach(_ => Unit)
 
     var simMatRDD = initSimMatRDD.leftOuterJoin(deltaSimMatRDD).map { e =>
       (e._1, e._2._2.getOrElse(0.0) + e._2._1)
     }
-    simMatRDD.persist(StorageLevel.DISK_ONLY).foreach(_ => Unit)
+    simMatRDD.persist(StorageLevel.MEMORY_AND_DISK).foreach(_ => Unit)
 
     // iterate to calculate the similarity matrix
     (0 until (iterations - 1)).foreach { i =>
       deltaSimMatRDD = deltaSimrankCalculate(bdCRSGraph, bdCCSGraph,  deltaSimMatRDD)
-      deltaSimMatRDD.persist(StorageLevel.DISK_ONLY)
 
       // S(t+1) = s(t) + delta(t+1)
       simMatRDD = simMatRDD.leftOuterJoin(deltaSimMatRDD).map { e =>
@@ -56,12 +55,14 @@ class NaiveDeltaImpl(@transient sc: SparkContext) extends NaiveMapReduceImpl(sc)
       simMatRDD.foreach(_ => Unit)
     }
 
-   //simMatRDD.saveAsTextFile("result")
+    simMatRDD.saveAsTextFile("result")
   }
 
-  protected def deltaSimrankCalculate(bdCRSGraph: Broadcast[mutable.HashMap[Int, mutable.ArrayBuffer[Int]]],
-    bdCCSGraph: Broadcast[mutable.HashMap[Int, mutable.ArrayBuffer[Int]]],
-    deltaSimMatRDD: RDD[((Int, Int), Double)]): RDD[((Int, Int), Double)] = {
+  protected def deltaSimrankCalculate(
+      bdCRSGraph: Broadcast[mutable.HashMap[Int, mutable.ArrayBuffer[Int]]],
+      bdCCSGraph: Broadcast[mutable.HashMap[Int, mutable.ArrayBuffer[Int]]],
+      deltaSimMatRDD: RDD[((Int, Int), Double)])
+    : RDD[((Int, Int), Double)] = {
 
     deltaSimMatRDD.filter { ele =>
       // filter out small value

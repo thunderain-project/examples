@@ -49,7 +49,9 @@ class MatrixImpl(@transient sc: SparkContext) extends ResultVerification {
 
   def adjacencyMatrix(): mutable.HashMap[(Int, Int), Double] = {
     val graphMap = new mutable.HashMap[Int, mutable.ArrayBuffer[(Int, Double)]]()
-    initializeGraphDataLocally(graphPath).foreach { r =>
+
+    val data = initializeGraphDataLocally(graphPath)
+    (data.map(r => ((r._1._2, r._1._1), r._2)) ++ data).foreach { r =>
       val buf = graphMap.getOrElseUpdate(r._1._2, mutable.ArrayBuffer())
       buf += ((r._1._1, r._2))
     }
@@ -112,16 +114,17 @@ class MatrixImpl(@transient sc: SparkContext) extends ResultVerification {
       simMatrix = matrixSimrankCalculate(bdAdjMatArray, simMatrix, i)
     }
 
-    simMatrix.foreach(_ => Unit)
+    //simMatrix.foreach(_ => Unit)
 
     /**
      * test for result verification, it should be disabled for real use
-     * val result = simMatrix.flatMap { p =>
-     *   import scala.collection.JavaConversions._
-     *   p._2._1.iterator zip p._2._2.iterator map(kv => ((p._1, kv._1.toInt), kv._2.toDouble))
-     * }.collect()
-     * assert(verify(result), "matrices comparison failed")
+    val result = simMatrix.flatMap { p =>
+      import scala.collection.JavaConversions._
+      p._2._1.iterator zip p._2._2.iterator map(kv => ((p._1, kv._1.toInt), kv._2.toDouble))
+    }.collect()
+    assert(verify(result), "matrices comparison failed")
     */
+
   }
 
   protected def leftMatMult(

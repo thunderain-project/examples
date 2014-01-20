@@ -12,7 +12,8 @@ trait ResultVerification extends AbstractSimRankImpl {
   def adjMatrix: DenseMatrix = {
     val matrix = new DenseMatrix(graphSize, graphSize)
     val graphMap = new mutable.HashMap[Int, mutable.ArrayBuffer[(Int, Double)]]()
-    initializeGraphDataLocally(graphPath).foreach { r =>
+    val data = initializeGraphDataLocally(graphPath)
+    (data.map(r => ((r._1._2, r._1._1), r._2)) ++ data).foreach { r =>
       val buf = graphMap.getOrElseUpdate(r._1._2, mutable.ArrayBuffer())
       buf += ((r._1._1, r._2))
     }
@@ -50,7 +51,7 @@ trait ResultVerification extends AbstractSimRankImpl {
       val (i1, i2) = key
       //println("i1: " + i1.row() + "," + i1.column() + ":" + i1.get())
       //println("i2: " + i2.row() + "," + i2.column() + ":" + i2.get())
-      if (scala.math.abs(i1.get - i2.get) > 0.00001) identity = false
+      if (scala.math.abs(i1.get - i2.get) > 1e-8) identity = false
     }
 
     identity

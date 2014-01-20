@@ -35,6 +35,7 @@ java -ea                          \
   -Dhttp.proxyPort=911 \
   -Dhttps.proxyHost=proxy-shz.intel.com \
   -Dhttps.proxyPort=911 \
+  -Dcom.github.fommil.netlib.BLAS=com.github.fommil.netlib.NativeRefBLAS \
   -XX:+AggressiveOpts             \
   -XX:+UseParNewGC                \
   -XX:+UseConcMarkSweepGC         \

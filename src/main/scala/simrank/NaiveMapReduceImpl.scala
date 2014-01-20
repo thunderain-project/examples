@@ -30,7 +30,7 @@ class NaiveMapReduceImpl(@transient val sc: SparkContext)
     val bdCCSGraph = sc.broadcast(CCSGraph)
 
     val diagMatRDD = initializeData(getVerifiedProperty("simrank.diagSimMatPath"), sc)
-    diagMatRDD.persist(StorageLevel.DISK_ONLY).foreach(_ => Unit)
+    diagMatRDD.persist(StorageLevel.MEMORY_AND_DISK).foreach(_ => Unit)
 
     var simMatRDD = initializeData(getVerifiedProperty("simrank.initSimMatPath"), sc)
       .partitionBy(new HashPartitioner(graphPartitions))
@@ -38,10 +38,9 @@ class NaiveMapReduceImpl(@transient val sc: SparkContext)
     // iterate to calculate the similarity matrix
     (1 to iterations).foreach { i =>
       simMatRDD = simrankCalculate(bdCRSGraph, bdCCSGraph, simMatRDD).union(diagMatRDD)
-      simMatRDD.persist(StorageLevel.DISK_ONLY).foreach(_ => Unit)
     }
 
-    //simMatRDD.saveAsTextFile("result")
+    simMatRDD.saveAsTextFile("result")
   }
 
   def simrankCalculate(bdCRSGraph: Broadcast[mutable.HashMap[Int, mutable.ArrayBuffer[Int]]],

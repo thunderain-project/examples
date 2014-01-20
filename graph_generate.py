@@ -3,8 +3,8 @@
 import random
 import numpy
 
-GRAPHSET_SIZE = 100
-EDGE_SIZE = 1400
+GRAPHSET_SIZE = 50
+EDGE_SIZE = 700
 
 SET_A_SIZE = random.randint(1, GRAPHSET_SIZE)
 SET_B_SIZE = GRAPHSET_SIZE - SET_A_SIZE
@@ -21,17 +21,26 @@ uniforms = numpy.random.uniform(0, 1.0, EDGE_SIZE)
 normalized_uniform = uniforms * SET_A_SIZE
 normalized_uniform.sort()
 
+d = {}
+for e in normalized_uniform:
+    va = int(e)
+    if (d.has_key(va)):
+        d[va] = d[va] + 1
+    else:
+        d[va] = 1
 
 f = file("graph", "w")
 
-for e in normalized_uniform:
-    va = int(e)
+for (k,v) in d.items():
+    va = k
     # randomly choose a vertex from set B
-    vb = random.randint(SET_A_SIZE, GRAPHSET_SIZE - 1)
-    value = 1.0
+    rands = set()
+    for i in range(0, v):
+        r = random.randint(SET_A_SIZE, GRAPHSET_SIZE - 1)
+        rands.add(r)
 
-    # print "(%d, %d), %d" %(va, vb, value)
-    f.write("((%d,%d),%f)\n" %(va, vb, value))
-    f.write("((%d,%d),%f)\n" %(vb, va, value))
+    for r in rands:
+        #print "(%d, %d), %d" %(va, r, 1.0)
+        f.write("((%d,%d),%f)\n" %(va, r, 1.0))
 
 f.close()

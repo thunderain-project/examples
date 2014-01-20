@@ -5,7 +5,7 @@ import org.apache.spark.SparkContext
 object SimRankDataPrepare {
   def main(args: Array[String]) {
     if (args.length < 6) {
-      println("Usage: SimRankDatPrepare SparkMaster jarPath graphASize graphBSize " +
+      println("Usage: SimRankDataPrepare SparkMaster jarPath graphASize graphBSize " +
         "partitions simMatPath diagMatPath")
       System.exit(-1)
     }
