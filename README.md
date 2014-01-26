@@ -1,23 +1,36 @@
 Spark SimRank Algorithm Implementation
 ===
 
-在这个算法包中实现了五种算法：深度遍历算法，naive MapReduce，delta MapReduce，matrix multiplication
-和Random walk with restart的PageRank算法，通过配置中不同的配置可以选择使用不同的算法。
+This package includs 5 different SimRank implementations: DFS (depth-first search) MapReduce, naive
+MapReduce, delta MapReduce, matrix multiplication and PageRank-like Random Walk with Restart. You
+can choose different implementation through configuration.
 
-算法兼容的Spark版本是0.8.1及以上版本，编译和运行使用`sbt assembly`.
+This implementation is compatible with Spark 0.8.1+ version, you can compile using `sbt assembly`,
+before that please configure the correct Hadoop version in `build.sbt`.
 
-运行算法分为以下几个步骤：
+How to Run
+===
 
-1. 使用python脚本产生邻接矩阵，其中可以配置的是GRAPH_SIZE (邻接矩阵的顶点个数)，EDGE_SIZE (邻接矩阵
-   中边的数量)，通过这个脚本会产生邻接矩阵的文件。
-2. 产生初始相似矩阵，使用命令`./run simrank.SimRankDataPrepare`产生数据。需要注意的是这里的参数中有
-   两个`graphASize`和`graphBSize`指的是二分图中两个子图的顶点数量，应和步骤1产生的结果保持一致。
-3. 使用命令`./run simrank.SimRankImpl config/config.properties`运行SimRank算法。
+1. Using `graph_generate.py` to generate random adjacency matrix, you can configure `GRAPH_SIZE`
+   (number of vertices), `EDGE_SIZE` (number of edges) to control the matrix rank, this script will
+   serialize matrix to file.
+2. Generate initial similarity matrix. Using `./run simrank.SimRankDataPrepare` to generate data, it
+   should be noted that two parameters `graphASize` and `graphBSize`, which specifies the
+   vertices number of two sub-graphs in the bipartite graph, should be the same as step 1's generated
+   result.
+3. Configure `config/config.properties` and run by `./run simrank.SimRankImpl`.
 
-Notes:
+Notes
+===
 
-* 步骤2会产生初始的相似矩阵和一个单位阵，其中初始相似阵是一个上三角阵，算法delta MapReduce需要这样的
-  上三角阵作为初始的输入相似矩阵进行计算。其他的算法如naive MapReduce, matrix multiplication和
-  PageRank like算法可以使用单位阵作为初始输入相似矩阵，单位阵可以自己构造，这样就无需执行步骤2了。
-* 五种算法中重点关注了marix multiplication的实现和调优，其他算法并没有进一步深究，只做参考。
-* 深度遍历算法时间复杂度很高，只做实现参考。
+* Step 2 data preparation will generate one initial similarity matrix and one identity matrix,
+  here similarity matrix is a upper triangluar matrix, implementation *delta MapReduce* will use this
+  matrix as a initial input similarity matrix, for other implementations identity matrix would be
+  enough to use as a initial input similarity matrix, you can skip step 2 if identity matrix is
+  created by yourself.
+* Here we focused on *matrix multiplication* implementation, other implementations are implemented
+  only for reference, may not be well tuned.
+
+---
+
+This implementation is open sourced under Apache License Version 2.0.
