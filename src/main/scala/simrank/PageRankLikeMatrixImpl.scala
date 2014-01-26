@@ -8,8 +8,6 @@ import org.apache.spark.SparkContext._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 
-import scala.collection.mutable
-
 class PageRankLikeMatrixImpl(@transient sc: SparkContext) extends MatrixImpl(sc) {
   override def executeSimRank() {
     val adjMatrix = adjacencyMatrix()
@@ -40,7 +38,7 @@ class PageRankLikeMatrixImpl(@transient sc: SparkContext) extends MatrixImpl(sc)
   }
 
   def pageRankLikeMatrixSimrankCal(
-    adjMatSlices: Array[Broadcast[mutable.ArrayBuffer[(Int, SparseVector)]]],
+    adjMatSlices: Array[Broadcast[Array[(Int, SparseVector)]]],
     simMatrix: RDD[(Int, DenseVector)]
   ): RDD[(Int, DenseVector)] = {
     simMatrix.mapPartitions { iter =>

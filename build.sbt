@@ -18,7 +18,8 @@ unmanagedJars in Compile <++= baseDirectory map { base =>
 
 libraryDependencies += "org.apache.spark" %% "spark-core" % "0.8.1-incubating"
 
-libraryDependencies += "org.apache.hadoop" % "hadoop-client" % "2.0.0-cdh4.1.2" excludeAll(ExclusionRule(organization="asm"))
+
+libraryDependencies += "org.apache.hadoop" % "hadoop-client" % "2.0.0-mr1-cdh4.1.2" excludeAll(ExclusionRule(organization="asm"))
 
 libraryDependencies += "com.googlecode.matrix-toolkits-java" % "mtj" % "1.0.1"
 

@@ -63,7 +63,7 @@ class MatrixImpl(@transient sc: SparkContext) extends ResultVerification {
   }
 
   def partitionAdjMatrix(adjMatrix: mutable.HashMap[(Int, Int), Double])
-    : Array[mutable.ArrayBuffer[(Int, SparseVector)]] = {
+    : Array[Array[(Int, SparseVector)]] = {
 
     val transNormAdjCRSMatrix = new mutable.HashMap[Int, mutable.ArrayBuffer[(Int, Double)]]()
     adjMatrix.foreach { kv =>
@@ -87,7 +87,7 @@ class MatrixImpl(@transient sc: SparkContext) extends ResultVerification {
       buf += ((kv._1, vec))
     }
 
-    adjMatArray
+    adjMatArray.map(m => m.toArray)
   }
 
   def transpose(matrix: mutable.HashMap[(Int, Int), Double])
@@ -129,7 +129,7 @@ class MatrixImpl(@transient sc: SparkContext) extends ResultVerification {
 
   protected def leftMatMult(
     iter1: Iterator[(Int, (IntArrayList, DoubleArrayList))],
-    adjMatSlice: Broadcast[mutable.ArrayBuffer[(Int, SparseVector)]])
+    adjMatSlice: Broadcast[Array[(Int, SparseVector)]])
   : Iterator[(Int, (Int, Double))] = {
 
     iter1.flatMap { col =>
@@ -155,7 +155,7 @@ class MatrixImpl(@transient sc: SparkContext) extends ResultVerification {
 
   protected def rightMatMult(
     iter1: Iterator[(Int, (IntArrayList, DoubleArrayList))],
-    adjMatSlices: Array[Broadcast[mutable.ArrayBuffer[(Int, SparseVector)]]])
+    adjMatSlices: Array[Broadcast[Array[(Int, SparseVector)]]])
   : Iterator[(Int, (IntArrayList, DoubleArrayList))] = {
     iter1.map { col =>
       val cIdx = col._1
@@ -189,7 +189,7 @@ class MatrixImpl(@transient sc: SparkContext) extends ResultVerification {
   }
 
   def matrixSimrankCalculate(
-    transAdjMatSlices: Array[Broadcast[mutable.ArrayBuffer[(Int, SparseVector)]]],
+    transAdjMatSlices: Array[Broadcast[Array[(Int, SparseVector)]]],
     simMatrix: RDD[(Int, (IntArrayList, DoubleArrayList))],
     iteration: Int)
   : RDD[(Int, (IntArrayList, DoubleArrayList))] = {
